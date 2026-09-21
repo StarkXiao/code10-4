@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import {
+  compareRepairRounds,
   costPerWear,
   daysBetween,
   frequencyBand,
   healthScore,
   recurrenceRate,
+  repairChangeScore,
+  repairComfortScore,
+  repairDimensionScore,
   repairLifespan,
+  repairTraceScore,
   serviceDays,
   summarizeLifespans,
   wearFrequencyPerMonth,
@@ -78,5 +83,110 @@ describe('统计口径（项目文档 13.1 / 13.3）', () => {
     expect(mid.score).toBeGreaterThan(40);
     expect(mid.score).toBeLessThan(85);
     expect(mid.factors.map((f) => f.key)).toEqual(['damage', 'repair', 'service', 'wear']);
+  });
+});
+
+describe('修补后变化评分', () => {
+  it('无痕修复接近满分：完全看不出 + 无色差 + 无尺寸变化 + 手感垂坠不变', () => {
+    const score = repairChangeScore({
+      visibility: 'invisible',
+      colorMatch: 'perfect',
+      dimensionChange: { lengthMm: 0, widthMm: 0 },
+      stiffness: 'same',
+      drapeChange: 'none',
+    });
+    // trace=100, dimension=100, comfort=(85+100)/2=92.5 → 加权 = 97
+    expect(score.total).toBe(97);
+    expect(score.level).toBe('seamless');
+    expect(score.factors.map((f) => f.key)).toEqual(['trace', 'dimension', 'comfort']);
+  });
+
+  it('痕迹分 = 痕迹等级 + 颜色修正 + 外人可见修正', () => {
+    expect(repairTraceScore({ visibility: 'invisible', colorMatch: 'perfect' })).toBe(100);
+    expect(repairTraceScore({ visibility: 'slight', colorMatch: 'close' })).toBe(70);
+    // 较明显 50 + 明显色差 -25 - 外人可见 10 = 15
+    expect(
+      repairTraceScore({ visibility: 'noticeable', colorMatch: 'mismatch', visibleFromOutside: true }),
+    ).toBe(15);
+    // 不会扣成负数
+    expect(
+      repairTraceScore({ visibility: 'obvious', colorMatch: 'mismatch', visibleFromOutside: true }),
+    ).toBe(0);
+  });
+
+  it('尺寸分按最大绝对偏移线性折算，正负方向同等对待', () => {
+    expect(repairDimensionScore({ lengthMm: 0, widthMm: 0 })).toBe(100);
+    expect(repairDimensionScore({ lengthMm: 10, widthMm: -4 })).toBe(80);
+    expect(repairDimensionScore({ lengthMm: -25, widthMm: 0 })).toBe(50);
+    expect(repairDimensionScore({ lengthMm: 60, widthMm: 0 })).toBe(0);
+  });
+
+  it('尺寸未填时该分项为 null，权重重新归一化，不被当成满分', () => {
+    const noDimension = repairChangeScore({
+      visibility: 'invisible',
+      colorMatch: 'perfect',
+      stiffness: 'same',
+      drapeChange: 'none',
+    });
+    expect(noDimension.factors.find((f) => f.key === 'dimension')?.score).toBeNull();
+    // 分项先取整：comfort 92.5→93；只剩 trace=100 与 comfort=93 按 40:40 加权 → 97
+    expect(noDimension.total).toBe(97);
+  });
+
+  it('体感分 = 手感与垂坠感等权平均，影响活动再扣 30', () => {
+    expect(repairComfortScore({ stiffness: 'same', drapeChange: 'none' })).toBe(93);
+    // (55 + 40)/2 - 30 = 17.5 → 18
+    expect(
+      repairComfortScore({ stiffness: 'stiffer', drapeChange: 'obvious', mobilityLimited: true }),
+    ).toBe(18);
+  });
+
+  it('分档边界：85/70/50', () => {
+    const build = (total: ReturnType<typeof repairChangeScore>) => total.level;
+    // trace=80(slight+perfect), comfort=93 → 无尺寸时 (80+93)/2 = 86.5 → 87 seamless
+    expect(
+      build(repairChangeScore({ visibility: 'slight', colorMatch: 'perfect', stiffness: 'same', drapeChange: 'none' })),
+    ).toBe('seamless');
+    // 最差组合落在 poor
+    expect(
+      build(
+        repairChangeScore({
+          visibility: 'obvious',
+          colorMatch: 'mismatch',
+          dimensionChange: { lengthMm: 40, widthMm: 40 },
+          stiffness: 'stiffer',
+          drapeChange: 'obvious',
+          mobilityLimited: true,
+        }),
+      ),
+    ).toBe('poor');
+  });
+
+  it('未知枚举取值按最差档处理，绝不静默当满分', () => {
+    const score = repairChangeScore({
+      visibility: 'weird',
+      colorMatch: 'weird',
+      stiffness: 'weird',
+      drapeChange: 'weird',
+    });
+    expect(score.factors.find((f) => f.key === 'trace')?.score).toBe(0);
+    expect(score.factors.find((f) => f.key === 'comfort')?.score).toBe(0);
+    expect(score.total).toBe(0);
+  });
+
+  it('多轮对比按轮次排序给出 delta，正值=比上一已评分轮次更接近原状', () => {
+    const s = (total: number) =>
+      ({ ...repairChangeScore({ visibility: 'invisible', colorMatch: 'perfect', stiffness: 'same', drapeChange: 'none' }), total });
+    const diffs = compareRepairRounds([
+      { round: 3, score: s(90) },
+      { round: 1, score: s(70) },
+      { round: 2, score: null },
+    ]);
+    expect(diffs.map((d) => d.round)).toEqual([1, 2, 3]);
+    expect(diffs[0].delta).toBeNull();
+    expect(diffs[1].total).toBeNull();
+    expect(diffs[1].delta).toBeNull();
+    // 第 3 轮跨过未评分的第 2 轮，与第 1 轮对比
+    expect(diffs[2].delta).toBe(20);
   });
 });

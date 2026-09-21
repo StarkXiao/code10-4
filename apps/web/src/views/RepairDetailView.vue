@@ -11,6 +11,7 @@ import {
   VERDICT_LABEL,
   VISIBILITY_LABEL,
   COLOR_MATCH_LABEL,
+  repairChangeScore,
   type DrapeChange,
   type ExecutedBy,
   type RepairStatus,
@@ -24,6 +25,7 @@ import { repairApi } from '../api';
 import { getToken, messageOf } from '../api/client';
 import BeforeAfterSlider from '../components/BeforeAfterSlider.vue';
 import EmptyState from '../components/EmptyState.vue';
+import RepairChangeScoreTag from '../components/RepairChangeScoreTag.vue';
 import type { RepairDetail } from '../types';
 
 const route = useRoute();
@@ -36,10 +38,18 @@ const extraDays = ref<number | undefined>();
 
 const repair = computed(() => data.value?.repair);
 const change = computed(() => repair.value?.change ?? null);
+const changeScore = computed(() => (change.value ? repairChangeScore(change.value) : null));
 const beforePhoto = computed(() => (comparison.value?.before as { id: string } | null) ?? null);
 const afterPhoto = computed(() => (comparison.value?.after as { id: string } | null) ?? null);
 const aspectMismatch = computed(() => Boolean(comparison.value?.aspectMismatch));
 const comparisonHint = computed(() => (comparison.value?.hint as string | null) ?? null);
+
+function factorColor(value: number | null): string {
+  if (value === null) return '#909399';
+  if (value >= 85) return '#67c23a';
+  if (value >= 70) return '#e6a23c';
+  return '#f56c6c';
+}
 
 async function load(): Promise<void> {
   try {
@@ -156,9 +166,34 @@ function openWorksheet(): void {
           </el-card>
 
           <el-card shadow="never">
-            <template #header>修补后变化</template>
+            <template #header>
+              <div style="display: flex; justify-content: space-between; align-items: center">
+                <span>修补后变化</span>
+                <RepairChangeScoreTag v-if="change" :change="change" with-label />
+              </div>
+            </template>
             <EmptyState v-if="!change" title="还没有记录变化" description="这是档案最有价值的部分，别跳过。" />
-            <el-descriptions v-else :column="2" size="small" border>
+            <template v-else>
+              <div v-if="changeScore" style="display: grid; gap: 12px">
+                <div v-for="factor in changeScore.factors" :key="factor.key">
+                  <div style="display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 2px">
+                    <span>{{ factor.label }}</span>
+                    <span :style="{ color: factorColor(factor.score), fontWeight: 600 }">
+                      {{ factor.score ?? '未填' }}
+                      <span class="muted" style="font-weight: 400">/ 100 · 权重 {{ factor.weight }}</span>
+                    </span>
+                  </div>
+                  <el-progress
+                    :percentage="factor.score ?? 0"
+                    :show-text="false"
+                    :stroke-width="8"
+                    :color="factorColor(factor.score)"
+                  />
+                  <div class="muted" style="font-size: 12px">{{ factor.detail }}</div>
+                </div>
+              </div>
+              <el-divider style="margin: 12px 0" />
+              <el-descriptions :column="2" size="small" border>
               <el-descriptions-item label="外观痕迹">{{ VISIBILITY_LABEL[change.visibility as Visibility] }}</el-descriptions-item>
               <el-descriptions-item label="颜色匹配">{{ COLOR_MATCH_LABEL[change.colorMatch as ColorMatch] }}</el-descriptions-item>
               <el-descriptions-item label="手感">{{ STIFFNESS_LABEL[change.stiffness as Stiffness] }}</el-descriptions-item>
@@ -174,6 +209,7 @@ function openWorksheet(): void {
               <el-descriptions-item label="穿着体感" :span="2">{{ change.comfortNote ?? '—' }}</el-descriptions-item>
               <el-descriptions-item label="试穿记录" :span="2">{{ change.wearTestNote ?? '—' }}</el-descriptions-item>
             </el-descriptions>
+            </template>
           </el-card>
         </el-col>
 

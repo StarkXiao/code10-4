@@ -5,6 +5,7 @@ import { useQuery, useQueryClient } from '@tanstack/vue-query';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { ArrowDown } from '@element-plus/icons-vue';
 import {
+  COLOR_MATCH_LABEL,
   DAMAGE_STATUS_LABEL,
   DAMAGE_TERMINAL_STATUSES,
   DISPOSITION_LABEL,
@@ -17,8 +18,11 @@ import {
   REPAIR_STATUS_LABEL,
   SEASON_LABEL,
   SEVERITY_LABEL,
+  STIFFNESS_LABEL,
   VERDICT_LABEL,
+  VISIBILITY_LABEL,
   WEAR_FREQUENCY_BAND_LABEL,
+  type ColorMatch,
   type DamageStatus,
   type Disposition,
   type GarmentCategory,
@@ -29,13 +33,17 @@ import {
   type RepairStatus,
   type Season,
   type Severity,
+  type Stiffness,
   type Verdict,
+  type Visibility,
 } from '@gml/shared';
 import { garmentApi, wearApi } from '../api';
 import { ApiError, getToken, messageOf, photoFileUrl } from '../api/client';
 import HealthScoreCard from '../components/HealthScoreCard.vue';
 import EmptyState from '../components/EmptyState.vue';
 import PhotoUploader from '../components/PhotoUploader.vue';
+import RepairChangeScoreTag from '../components/RepairChangeScoreTag.vue';
+import RepairRoundsCompare from '../components/RepairRoundsCompare.vue';
 import { useOfflineQueueStore } from '../stores/offlineQueue';
 
 const route = useRoute();
@@ -304,12 +312,15 @@ function openWorksheet(damageId: string): void {
                   <el-table-column label="状态" width="110">
                     <template #default="{ row }">{{ REPAIR_STATUS_LABEL[row.status as RepairStatus] }}</template>
                   </el-table-column>
-                  <el-table-column label="修补后变化">
+                  <el-table-column label="修补后变化" width="330">
                     <template #default="{ row }">
-                      <span v-if="row.change">
-                        痕迹 {{ row.change.visibility }} / 颜色 {{ row.change.colorMatch }} / 手感 {{ row.change.stiffness }}
-                      </span>
+                      <RepairChangeScoreTag v-if="row.change" :change="row.change" />
                       <el-tag v-else size="small" type="warning">未填写</el-tag>
+                      <span v-if="row.change" class="muted" style="font-size: 12px; margin-left: 6px">
+                        痕迹 {{ VISIBILITY_LABEL[row.change.visibility as Visibility] }} ·
+                        色差 {{ COLOR_MATCH_LABEL[row.change.colorMatch as ColorMatch] }} ·
+                        手感 {{ STIFFNESS_LABEL[row.change.stiffness as Stiffness] }}
+                      </span>
                     </template>
                   </el-table-column>
                   <el-table-column label="复检" width="160">
@@ -329,6 +340,11 @@ function openWorksheet(damageId: string): void {
                     </template>
                   </el-table-column>
                 </el-table>
+
+                <RepairRoundsCompare
+                  :repairs="damage.repairs"
+                  @open="(id) => router.push({ name: 'repair-detail', params: { id } })"
+                />
 
                 <div v-if="openDamageIds.has(damage.id)" class="card-actions">
                   <el-button size="small" type="primary" @click="router.push({ name: 'repair-new', params: { id: damage.id } })">

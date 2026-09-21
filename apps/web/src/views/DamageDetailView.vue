@@ -20,6 +20,7 @@ import {
 import { damageApi } from '../api';
 import { getToken, messageOf, photoFileUrl } from '../api/client';
 import EmptyState from '../components/EmptyState.vue';
+import RepairChangeScoreTag from '../components/RepairChangeScoreTag.vue';
 import type { DamageDetail } from '../types';
 
 const route = useRoute();
@@ -178,9 +179,11 @@ function openWorksheet(): void {
                         · 用料：{{ repair.materials.map((m) => `${m.fabricSource.name} ${m.amount}${m.unit}`).join('、') }}
                       </span>
                     </div>
-                    <div v-if="repair.change" class="muted">
-                      修补后变化：痕迹 {{ repair.change.visibility }} / 颜色 {{ repair.change.colorMatch }} / 手感 {{ repair.change.stiffness }}
-                      <span v-if="repair.change.comfortNote"> · {{ repair.change.comfortNote }}</span>
+                    <div v-if="repair.change" style="margin-top: 2px">
+                      <RepairChangeScoreTag :change="repair.change" />
+                      <span v-if="repair.change.comfortNote" class="muted" style="margin-left: 6px">
+                        {{ repair.change.comfortNote }}
+                      </span>
                     </div>
                     <div v-else class="muted" style="color: #e6a23c">修补后变化未填写</div>
                     <div v-if="repair.reviews.length" class="muted">

@@ -17,6 +17,7 @@ import {
   STIFFNESS_LABEL,
   VISIBILITIES,
   VISIBILITY_LABEL,
+  repairChangeScore,
   type ColorMatch,
   type DrapeChange,
   type ExecutedBy,
@@ -79,6 +80,34 @@ const change = ref({
 
 const isSelfRepair = computed(() => form.value.executedBy === 'self' || form.value.executedBy === 'family');
 const suggested = computed(() => dict.value?.stitches ?? []);
+
+/** 填表时实时折算：保存前就能看到这轮修补会落在哪个分值带 */
+const liveScore = computed(() =>
+  repairChangeScore({
+    visibility: change.value.visibility,
+    colorMatch: change.value.colorMatch,
+    dimensionChange: { lengthMm: change.value.lengthMm, widthMm: change.value.widthMm },
+    stiffness: change.value.stiffness,
+    drapeChange: change.value.drapeChange,
+    mobilityLimited: change.value.mobilityLimited,
+    visibleFromOutside: change.value.visibleFromOutside,
+  }),
+);
+
+const liveScoreColor = computed(() => {
+  const n = liveScore.value.total;
+  if (n >= 85) return '#67c23a';
+  if (n >= 70) return '#409eff';
+  if (n >= 50) return '#e6a23c';
+  return '#f56c6c';
+});
+
+const factorColor = (value: number | null): string => {
+  if (value === null) return '#909399';
+  if (value >= 85) return '#67c23a';
+  if (value >= 70) return '#e6a23c';
+  return '#f56c6c';
+};
 
 onMounted(async () => {
   try {
@@ -300,6 +329,26 @@ async function saveChange(): Promise<void> {
         style="margin-bottom: 12px"
       />
       <el-form label-width="120px">
+        <el-alert
+          type="info"
+          :closable="false"
+          style="margin-bottom: 12px; background: #f4f8ff; border-color: #c6e0ff"
+        >
+          <template #title>
+            <div style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap">
+              <span style="font-weight: 600">
+                本轮变化评分：
+                <span :style="{ color: liveScoreColor, fontSize: '18px' }">{{ liveScore.total }}</span>
+                <span class="muted">/ 100 · {{ liveScore.levelLabel }}</span>
+              </span>
+              <span v-for="factor in liveScore.factors" :key="factor.key" style="font-size: 12px">
+                {{ factor.label }}
+                <strong :style="{ color: factorColor(factor.score) }">{{ factor.score ?? '—' }}</strong>
+              </span>
+            </div>
+            <div class="muted" style="font-size: 12px; margin-top: 2px">随选择实时折算，多轮修补的差异将在档案页对比</div>
+          </template>
+        </el-alert>
         <el-form-item label="外观痕迹">
           <el-radio-group v-model="change.visibility">
             <el-radio-button v-for="item in VISIBILITIES" :key="item" :label="item">{{ VISIBILITY_LABEL[item] }}</el-radio-button>

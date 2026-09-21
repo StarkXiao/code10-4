@@ -7,6 +7,10 @@ import {
   type WearSession,
   WEAR_SESSION_WEIGHT,
   type Season,
+  type Visibility,
+  type ColorMatch,
+  type Stiffness,
+  type DrapeChange,
 } from './enums.js';
 
 export const MS_PER_DAY = 86_400_000;
@@ -263,4 +267,223 @@ export function summarizeLifespans(samples: LifespanResult[]): {
     observedCount: observed.length,
     minObservedDays: observed.length ? Math.min(...observed.map((s) => s.days)) : null,
   };
+}
+
+// ----------------------------------------------------------------
+// 修补后变化评分（项目文档 13.1 的延伸口径：把主观记录折算成可比分值）
+//
+// 三个分项均为 0–100，越高代表越接近修补前原状；总分按权重加权，
+// 尺寸未填时该分项不参与，权重重新归一化（避免"没量尺寸"被当成满分）。
+
+/** 痕迹分基础值：外观痕迹等级 */
+const VISIBILITY_SCORE: Record<Visibility, number> = {
+  invisible: 100,
+  slight: 80,
+  noticeable: 50,
+  obvious: 20,
+};
+
+/** 颜色匹配修正：只减不加，色差是痕迹的一部分 */
+const COLOR_MATCH_MODIFIER: Record<ColorMatch, number> = {
+  perfect: 0,
+  close: -10,
+  mismatch: -25,
+};
+
+/** 手感基础值：轻微变软通常无感，变硬才会硌 */
+const STIFFNESS_SCORE: Record<Stiffness, number> = {
+  softer: 100,
+  same: 85,
+  stiffer: 55,
+};
+
+/** 垂坠感变化基础值 */
+const DRAPE_SCORE: Record<DrapeChange, number> = {
+  none: 100,
+  slight: 75,
+  obvious: 40,
+};
+
+/** 影响活动（举手/弯腰受限）对体感分的额外扣减 */
+const MOBILITY_LIMITED_PENALTY = 30;
+/** 修补痕迹外人一眼看得出对痕迹分的额外扣减 */
+const VISIBLE_OUTSIDE_PENALTY = 10;
+
+/** 尺寸每偏移 1mm 扣 2 分：0mm=100，10mm=80，25mm=50，≥50mm=0 */
+const DIMENSION_POINTS_PER_MM = 2;
+
+/** 分项权重：痕迹与体感各 40，尺寸 20（未填时归零重算） */
+export const REPAIR_CHANGE_FACTOR_WEIGHT = {
+  trace: 40,
+  dimension: 20,
+  comfort: 40,
+} as const;
+
+export type RepairChangeScoreLevel = 'seamless' | 'acceptable' | 'degraded' | 'poor';
+
+export const REPAIR_CHANGE_LEVEL_LABEL: Record<RepairChangeScoreLevel, string> = {
+  seamless: '几乎无感',
+  acceptable: '可接受',
+  degraded: '明显折损',
+  poor: '难以接受',
+};
+
+export interface RepairChangeScoreInput {
+  visibility: Visibility | string;
+  colorMatch: ColorMatch | string;
+  dimensionChange?: { lengthMm: number; widthMm: number } | null;
+  stiffness: Stiffness | string;
+  drapeChange: DrapeChange | string;
+  mobilityLimited?: boolean;
+  visibleFromOutside?: boolean;
+}
+
+export interface RepairChangeScoreFactor {
+  key: 'trace' | 'dimension' | 'comfort';
+  label: string;
+  /** 0–100；尺寸未填时为 null，不参与加权 */
+  score: number | null;
+  weight: number;
+  detail: string;
+}
+
+export interface RepairChangeScore {
+  total: number;
+  level: RepairChangeScoreLevel;
+  levelLabel: string;
+  factors: RepairChangeScoreFactor[];
+}
+
+function repairChangeLevel(score: number): RepairChangeScoreLevel {
+  if (score >= 85) return 'seamless';
+  if (score >= 70) return 'acceptable';
+  if (score >= 50) return 'degraded';
+  return 'poor';
+}
+
+/** 痕迹分：痕迹等级 + 颜色匹配修正 + 外人可见修正，夹到 0–100 */
+export function repairTraceScore(
+  input: Pick<RepairChangeScoreInput, 'visibility' | 'colorMatch' | 'visibleFromOutside'>,
+): number {
+  const base = VISIBILITY_SCORE[input.visibility as Visibility] ?? 0;
+  const color = COLOR_MATCH_MODIFIER[input.colorMatch as ColorMatch] ?? COLOR_MATCH_MODIFIER.mismatch;
+  const outside = input.visibleFromOutside ? VISIBLE_OUTSIDE_PENALTY : 0;
+  return clampScore(base + color - outside);
+}
+
+/**
+ * 尺寸分：取长/宽两个方向上最大绝对偏移线性折算。
+ * 偏移不分正负（缩小与放大多半一样不舒服）；未填尺寸返回 null。
+ */
+export function repairDimensionScore(
+  dimensionChange: { lengthMm: number; widthMm: number } | null | undefined,
+): number | null {
+  if (!dimensionChange) return null;
+  const lengthMm = Number.isFinite(dimensionChange.lengthMm) ? dimensionChange.lengthMm : 0;
+  const widthMm = Number.isFinite(dimensionChange.widthMm) ? dimensionChange.widthMm : 0;
+  const maxOffset = Math.max(Math.abs(lengthMm), Math.abs(widthMm));
+  return clampScore(100 - maxOffset * DIMENSION_POINTS_PER_MM);
+}
+
+/** 体感分：手感与垂坠感等权平均，影响活动再扣分 */
+export function repairComfortScore(
+  input: Pick<RepairChangeScoreInput, 'stiffness' | 'drapeChange' | 'mobilityLimited'>,
+): number {
+  const stiffness = STIFFNESS_SCORE[input.stiffness as Stiffness] ?? 0;
+  const drape = DRAPE_SCORE[input.drapeChange as DrapeChange] ?? 0;
+  const mobility = input.mobilityLimited ? MOBILITY_LIMITED_PENALTY : 0;
+  return clampScore((stiffness + drape) / 2 - mobility);
+}
+
+/**
+ * 修补后变化评分。输入字段用宽松类型（兼容接口返回的 string），
+ * 但枚举口径仍以 enums.ts 为唯一真相：未知取值按最差档处理，绝不静默当满分。
+ */
+export function repairChangeScore(input: RepairChangeScoreInput): RepairChangeScore {
+  const trace = repairTraceScore(input);
+  const dimension = repairDimensionScore(input.dimensionChange ?? null);
+  const comfort = repairComfortScore(input);
+
+  const maxOffset =
+    input.dimensionChange
+      ? Math.max(Math.abs(input.dimensionChange.lengthMm || 0), Math.abs(input.dimensionChange.widthMm || 0))
+      : null;
+
+  const factors: RepairChangeScoreFactor[] = [
+    {
+      key: 'trace',
+      label: '痕迹',
+      score: trace,
+      weight: REPAIR_CHANGE_FACTOR_WEIGHT.trace,
+      detail: input.visibleFromOutside ? '痕迹等级 + 颜色匹配 − 外人可见' : '痕迹等级 + 颜色匹配',
+    },
+    {
+      key: 'dimension',
+      label: '尺寸',
+      score: dimension,
+      weight: REPAIR_CHANGE_FACTOR_WEIGHT.dimension,
+      detail: maxOffset === null ? '未量尺寸，不计入' : `最大偏移 ${round2(maxOffset)} mm（每 mm 扣 ${DIMENSION_POINTS_PER_MM} 分）`,
+    },
+    {
+      key: 'comfort',
+      label: '体感',
+      score: comfort,
+      weight: REPAIR_CHANGE_FACTOR_WEIGHT.comfort,
+      detail: input.mobilityLimited ? '手感 + 垂坠感 − 影响活动' : '手感 + 垂坠感',
+    },
+  ];
+
+  const total =
+    weightedAverage(
+      factors
+        .filter((f) => f.score !== null)
+        .map((f) => ({ value: f.score as number, weight: f.weight })),
+    ) ?? 0;
+  const score = Math.round(total);
+  const level = repairChangeLevel(score);
+  return { total: score, level, levelLabel: REPAIR_CHANGE_LEVEL_LABEL[level], factors };
+}
+
+export interface RepairRoundInput {
+  round: number;
+  /** 未填写「修补后变化」时为 null，该轮不评分且不切断对比链 */
+  score: RepairChangeScore | null;
+}
+
+export interface ComparedRepairRound {
+  round: number;
+  total: number | null;
+  level: RepairChangeScoreLevel | null;
+  levelLabel: string | null;
+  factors: RepairChangeScoreFactor[];
+  /** 相对上一**已评分**轮次的总分差；正值=比上次更接近原状 */
+  delta: number | null;
+}
+
+/**
+ * 多轮修补对比：按轮次升序，补上每轮总分相对上一轮的差值。
+ * 未评分轮次（变化未填）给 null 且不切断对比链——下一条已评分轮次
+ * 仍与最近的已评分轮次比较，否则"第 2 轮忘填"会让第 3 轮失去参照。
+ */
+export function compareRepairRounds<T extends RepairRoundInput>(rounds: readonly T[]): Array<T & ComparedRepairRound> {
+  const sorted = [...rounds].sort((a, b) => a.round - b.round);
+  let lastScored: { total: number } | null = null;
+  return sorted.map((row) => {
+    const delta = row.score && lastScored ? row.score.total - lastScored.total : null;
+    const extra: ComparedRepairRound = {
+      round: row.round,
+      total: row.score?.total ?? null,
+      level: row.score?.level ?? null,
+      levelLabel: row.score?.levelLabel ?? null,
+      factors: row.score?.factors ?? [],
+      delta,
+    };
+    if (row.score) lastScored = { total: row.score.total };
+    return { ...row, ...extra };
+  });
+}
+
+function clampScore(n: number): number {
+  if (!Number.isFinite(n)) return 0;
+  return Math.round(Math.min(100, Math.max(0, n)));
 }
