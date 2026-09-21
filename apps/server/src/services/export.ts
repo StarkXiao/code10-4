@@ -16,6 +16,8 @@ import {
   WEAR_FREQUENCY_BAND_LABEL,
   DAMAGE_TYPE_LABEL,
   SEVERITY_LABEL,
+  compareRepairRounds,
+  scoreRepairChange,
   type DamageStatus,
   type Disposition,
   type GarmentCategory,
@@ -132,14 +134,62 @@ export async function garmentMarkdown(garmentId: string): Promise<string | null>
         lines.push(`- 用料：${repair.materials.map((m) => `${m.fabricSource.name} ${m.amount}${unitLabel(m.unit)}`).join('、')}`);
       }
       if (repair.change) {
+        const score = scoreRepairChange(toScoreInput(repair.change));
         lines.push(
           `- 修补后变化：痕迹 ${repair.change.visibility}、颜色 ${repair.change.colorMatch}、手感 ${repair.change.stiffness}${repair.change.comfortNote ? `、体感：${repair.change.comfortNote}` : ''}`,
+        );
+        lines.push(
+          `- 修补效果分：**${score.score}/100**（痕迹 ${score.traceScore} / 尺寸 ${score.fitScore ?? '未填'} / 体感 ${score.comfortScore}${
+            score.maxOffsetMm !== null ? ` · 最大偏移 ${score.maxOffsetMm} mm` : ''
+          }）`,
         );
       }
       for (const review of repair.reviews) {
         lines.push(
           `- 复检 ${dateOrDash(review.reviewedAt)}：${VERDICT_LABEL[review.verdict as Verdict] ?? review.verdict}（${review.daysSinceRepair} 天后）${review.verdictNote ? ` — ${review.verdictNote}` : ''}`,
         );
+      }
+    }
+    // 多轮修补量化对比：返工到底有没有让痕迹/尺寸/体感变好
+    if (damage.repairs.length >= 2) {
+      const comparison = compareRepairRounds(
+        damage.repairs.map((repair) => ({
+          repairId: repair.id,
+          round: repair.round,
+          stitch: repair.stitch.name,
+          finishedAt: repair.finishedAt,
+          status: repair.status,
+          change: repair.change ? toScoreInput(repair.change) : null,
+        })),
+      );
+      if (comparison.scoredCount >= 1) {
+        lines.push('');
+        lines.push('多轮修补效果对比（分值差为正=变好，最大偏移为物理量，负值=偏移减小）：');
+        lines.push('');
+        lines.push('| 轮次 | 针法 | 总分 | 痕迹 | 尺寸 | 体感 | 最大偏移(mm) |');
+        lines.push('| --- | --- | --- | --- | --- | --- | --- |');
+        comparison.rounds.forEach((round, index) => {
+          const delta = comparison.deltas[index];
+          const scoreCell =
+            round.score === null
+              ? '未填变化'
+              : `${round.score}${delta?.score !== null && delta?.score !== undefined ? `（${delta.score > 0 ? '+' : ''}${delta.score}）` : ''}`;
+          const factorCell = (value: number | null, key: 'traceScore' | 'fitScore' | 'comfortScore') => {
+            if (value === null) return '—';
+            const d = delta?.[key];
+            return d === null || d === undefined ? String(value) : `${value}（${d > 0 ? '+' : ''}${d}）`;
+          };
+          lines.push(
+            `| 第 ${round.round} 轮 | ${round.stitch ?? '—'} | ${scoreCell} | ${factorCell(round.traceScore, 'traceScore')} | ${factorCell(
+              round.fitScore,
+              'fitScore',
+            )} | ${factorCell(round.comfortScore, 'comfortScore')} | ${
+              round.maxOffsetMm === null
+                ? '—'
+                : `${round.maxOffsetMm}${delta?.maxOffsetMm !== null && delta?.maxOffsetMm !== undefined ? `（${delta.maxOffsetMm > 0 ? '+' : ''}${delta.maxOffsetMm}）` : ''}`
+            } |`,
+          );
+        });
       }
     }
     lines.push('');
@@ -155,6 +205,31 @@ export async function garmentMarkdown(garmentId: string): Promise<string | null>
 
 function unitLabel(unit: string): string {
   return unit === 'cm2' ? 'cm²' : unit === 'cm' ? 'cm' : '片';
+}
+
+/** Prisma 的 Json 字段类型是 JsonValue，评分前把尺寸偏移收敛成确定形状 */
+function toScoreInput(change: {
+  visibility: string;
+  colorMatch: string;
+  dimensionChange: unknown;
+  stiffness: string;
+  drapeChange: string;
+  mobilityLimited: boolean;
+  visibleFromOutside: boolean;
+}) {
+  const dimension = change.dimensionChange as { lengthMm?: number; widthMm?: number } | null;
+  return {
+    visibility: change.visibility,
+    colorMatch: change.colorMatch,
+    dimensionChange:
+      dimension && typeof dimension.lengthMm === 'number' && typeof dimension.widthMm === 'number'
+        ? { lengthMm: dimension.lengthMm, widthMm: dimension.widthMm }
+        : null,
+    stiffness: change.stiffness,
+    drapeChange: change.drapeChange,
+    mobilityLimited: change.mobilityLimited,
+    visibleFromOutside: change.visibleFromOutside,
+  };
 }
 
 export async function wardrobeCsv(wardrobeId: string, datasetName: string): Promise<string | null> {
@@ -221,10 +296,12 @@ export async function wardrobeCsv(wardrobeId: string, datasetName: string): Prom
     });
     const header = [
       '衣物编号', '破损编号', '轮次', '针法', '执行方', '开始', '完成', '观察期至', '状态',
-      '费用', '痕迹等级', '颜色匹配', '手感', '复检结论', '复检日期',
+      '费用', '痕迹等级', '颜色匹配', '手感', '效果总分', '痕迹分', '尺寸分', '体感分', '最大偏移mm',
+      '复检结论', '复检日期',
     ];
     const rows = repairs.map((r) => {
       const lastReview = r.reviews.at(-1);
+      const score = r.change ? scoreRepairChange(toScoreInput(r.change)) : null;
       return [
         r.damageEvent.garment.code,
         r.damageEvent.code,
@@ -239,6 +316,11 @@ export async function wardrobeCsv(wardrobeId: string, datasetName: string): Prom
         r.change?.visibility ?? '',
         r.change?.colorMatch ?? '',
         r.change?.stiffness ?? '',
+        score?.score ?? '',
+        score?.traceScore ?? '',
+        score?.fitScore ?? '',
+        score?.comfortScore ?? '',
+        score?.maxOffsetMm ?? '',
         lastReview ? VERDICT_LABEL[lastReview.verdict as Verdict] ?? lastReview.verdict : '',
         lastReview ? dateOrDash(lastReview.reviewedAt) : '',
       ];
@@ -331,17 +413,34 @@ export async function printGarmentHtml(garmentId: string, opts: { token?: string
 
   const history = garment.damageEvents
     .map((damage) => {
-      const repairs = damage.repairs
-        .map(
-          (repair) => `<tr>
+      const rounds = damage.repairs.map((repair) => ({ repair, score: repair.change ? scoreRepairChange(toScoreInput(repair.change)) : null }));
+      const roundComparison = rounds.length >= 2 ? compareRepairRounds(
+        damage.repairs.map((repair) => ({
+          round: repair.round,
+          stitch: repair.stitch.name,
+          finishedAt: repair.finishedAt,
+          status: repair.status,
+          change: repair.change ? toScoreInput(repair.change) : null,
+        })),
+      ) : null;
+      const repairs = rounds
+        .map(({ repair, score }, index) => {
+          const delta = roundComparison?.deltas[index] ?? null;
+          const scoreCell = score
+            ? `<strong>${score.score}</strong>（痕 ${score.traceScore} / 尺 ${score.fitScore ?? '—'} / 体 ${score.comfortScore}${
+                score.maxOffsetMm !== null ? ` · 偏 ${score.maxOffsetMm}mm` : ''
+              }${delta && delta.score !== null ? ` · 较上轮 ${delta.score > 0 ? '+' : ''}${delta.score}` : ''}）`
+            : '—';
+          return `<tr>
             <td>${repair.round}</td>
             <td>${esc(repair.stitch.name)}</td>
             <td>${dateOrDash(repair.finishedAt)}</td>
             <td>${esc(REPAIR_STATUS_LABEL[repair.status as RepairStatus] ?? repair.status)}</td>
-            <td>${esc(repair.change?.visibility ?? '—')} / ${esc(repair.change?.colorMatch ?? '—')}</td>
+            <td>${repair.change ? `${esc(repair.change.visibility)} / ${esc(repair.change.colorMatch)}` : '—'}</td>
+            <td>${scoreCell}</td>
             <td>${repair.reviews.length ? `${esc(VERDICT_LABEL[repair.reviews.at(-1)!.verdict as Verdict] ?? '')} @ ${dateOrDash(repair.reviews.at(-1)!.reviewedAt)}` : '未复检'}</td>
-          </tr>`,
-        )
+          </tr>`;
+        })
         .join('');
       return `<div class="card">
         <strong>${esc(damage.code)} · ${esc(damage.damageType.name)} · ${esc(
@@ -353,7 +452,7 @@ export async function printGarmentHtml(garmentId: string, opts: { token?: string
         ${damage.description ? `<div>${esc(damage.description)}</div>` : ''}
         ${
           repairs
-            ? `<table><thead><tr><th>轮次</th><th>针法</th><th>完成</th><th>状态</th><th>变化</th><th>复检</th></tr></thead><tbody>${repairs}</tbody></table>`
+            ? `<table><thead><tr><th>轮次</th><th>针法</th><th>完成</th><th>状态</th><th>痕迹/颜色</th><th>效果分（痕/尺/体）</th><th>复检</th></tr></thead><tbody>${repairs}</tbody></table>`
             : '<div class="muted">尚未修补</div>'
         }
       </div>`;

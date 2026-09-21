@@ -36,6 +36,8 @@ import { ApiError, getToken, messageOf, photoFileUrl } from '../api/client';
 import HealthScoreCard from '../components/HealthScoreCard.vue';
 import EmptyState from '../components/EmptyState.vue';
 import PhotoUploader from '../components/PhotoUploader.vue';
+import RepairScoreBadge from '../components/RepairScoreBadge.vue';
+import RepairRoundCompare from '../components/RepairRoundCompare.vue';
 import { useOfflineQueueStore } from '../stores/offlineQueue';
 
 const route = useRoute();
@@ -71,6 +73,28 @@ function photoUrl(photoId: string): string {
 
 function lastReview(reviews: Array<{ verdict: string; reviewedAt: string }>) {
   return reviews.at(-1) ?? null;
+}
+
+/** 把一条修补记录整理成多轮对比组件需要的轮次输入 */
+function toRoundInput(repair: (typeof damages.value)[number]['repairs'][number]) {
+  return {
+    repairId: repair.id,
+    round: repair.round,
+    stitch: repair.stitch.name,
+    finishedAt: repair.finishedAt,
+    status: repair.status,
+    change: repair.change
+      ? {
+          visibility: repair.change.visibility,
+          colorMatch: repair.change.colorMatch,
+          dimensionChange: repair.change.dimensionChange,
+          stiffness: repair.change.stiffness,
+          drapeChange: repair.change.drapeChange,
+          mobilityLimited: repair.change.mobilityLimited,
+          visibleFromOutside: repair.change.visibleFromOutside,
+        }
+      : null,
+  };
 }
 
 async function refresh(): Promise<void> {
@@ -304,12 +328,9 @@ function openWorksheet(damageId: string): void {
                   <el-table-column label="状态" width="110">
                     <template #default="{ row }">{{ REPAIR_STATUS_LABEL[row.status as RepairStatus] }}</template>
                   </el-table-column>
-                  <el-table-column label="修补后变化">
+                  <el-table-column label="修补效果分" width="190">
                     <template #default="{ row }">
-                      <span v-if="row.change">
-                        痕迹 {{ row.change.visibility }} / 颜色 {{ row.change.colorMatch }} / 手感 {{ row.change.stiffness }}
-                      </span>
-                      <el-tag v-else size="small" type="warning">未填写</el-tag>
+                      <RepairScoreBadge :change="row.change" mode="badge" />
                     </template>
                   </el-table-column>
                   <el-table-column label="复检" width="160">
@@ -329,6 +350,19 @@ function openWorksheet(damageId: string): void {
                     </template>
                   </el-table-column>
                 </el-table>
+
+                <el-collapse v-if="damage.repairs.length >= 2" class="round-compare-collapse">
+                  <el-collapse-item name="compare">
+                    <template #title>
+                      <span class="round-compare-title">多轮修补量化对比（痕迹 / 尺寸 / 体感）</span>
+                    </template>
+                    <RepairRoundCompare
+                      :repairs="damage.repairs.map(toRoundInput)"
+                      variant="table"
+                      @open="(id) => router.push({ name: 'repair-detail', params: { id } })"
+                    />
+                  </el-collapse-item>
+                </el-collapse>
 
                 <div v-if="openDamageIds.has(damage.id)" class="card-actions">
                   <el-button size="small" type="primary" @click="router.push({ name: 'repair-new', params: { id: damage.id } })">
@@ -429,3 +463,14 @@ function openWorksheet(damageId: string): void {
     </template>
   </div>
 </template>
+
+<style scoped>
+.round-compare-collapse {
+  margin-top: 4px;
+}
+.round-compare-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #c2410c;
+}
+</style>

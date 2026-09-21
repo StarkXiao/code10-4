@@ -28,6 +28,7 @@ import {
 import { damageApi, fabricApi, photoApi, repairApi, wardrobeApi } from '../api';
 import { messageOf } from '../api/client';
 import PhotoUploader from '../components/PhotoUploader.vue';
+import RepairScoreBadge from '../components/RepairScoreBadge.vue';
 import type { DamageDetail, DictionaryResponse, FabricSourceItem, GarmentPhotoRow } from '../types';
 
 const route = useRoute();
@@ -79,6 +80,17 @@ const change = ref({
 
 const isSelfRepair = computed(() => form.value.executedBy === 'self' || form.value.executedBy === 'family');
 const suggested = computed(() => dict.value?.stitches ?? []);
+
+/** 边填边算：把当前表单折算成修补效果分，保存前就能看到这轮修补大概什么水平 */
+const previewChange = computed(() => ({
+  visibility: change.value.visibility,
+  colorMatch: change.value.colorMatch,
+  dimensionChange: { lengthMm: change.value.lengthMm, widthMm: change.value.widthMm },
+  stiffness: change.value.stiffness,
+  drapeChange: change.value.drapeChange,
+  mobilityLimited: change.value.mobilityLimited,
+  visibleFromOutside: change.value.visibleFromOutside,
+}));
 
 onMounted(async () => {
   try {
@@ -299,6 +311,10 @@ async function saveChange(): Promise<void> {
         description="修补后的变化是这套档案最有价值的部分：三个月后你会想知道「补完之后穿起来到底怎么样」。"
         style="margin-bottom: 12px"
       />
+      <el-card shadow="never" style="margin-bottom: 12px">
+        <template #header>实时折算（保存后计入档案，可在多轮修补间对比）</template>
+        <RepairScoreBadge :change="previewChange" mode="card" />
+      </el-card>
       <el-form label-width="120px">
         <el-form-item label="外观痕迹">
           <el-radio-group v-model="change.visibility">

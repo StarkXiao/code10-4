@@ -20,6 +20,8 @@ import {
 import { damageApi } from '../api';
 import { getToken, messageOf, photoFileUrl } from '../api/client';
 import EmptyState from '../components/EmptyState.vue';
+import RepairScoreBadge from '../components/RepairScoreBadge.vue';
+import RepairRoundCompare from '../components/RepairRoundCompare.vue';
 import type { DamageDetail } from '../types';
 
 const route = useRoute();
@@ -32,6 +34,28 @@ const scheduleDate = ref('');
 
 const damage = computed(() => data.value?.damage);
 const isOpen = computed(() => !!damage.value && !DAMAGE_TERMINAL_STATUSES.includes(damage.value.status as DamageStatus));
+
+/** 多轮量化对比组件需要的轮次输入（痕迹 / 尺寸 / 体感） */
+const rounds = computed(() =>
+  (damage.value?.repairs ?? []).map((r) => ({
+    repairId: r.id,
+    round: r.round,
+    stitch: r.stitch.name,
+    finishedAt: r.finishedAt,
+    status: r.status,
+    change: r.change
+      ? {
+          visibility: r.change.visibility,
+          colorMatch: r.change.colorMatch,
+          dimensionChange: r.change.dimensionChange,
+          stiffness: r.change.stiffness,
+          drapeChange: r.change.drapeChange,
+          mobilityLimited: r.change.mobilityLimited,
+          visibleFromOutside: r.change.visibleFromOutside,
+        }
+      : null,
+  })),
+);
 
 async function load(): Promise<void> {
   try {
@@ -178,9 +202,11 @@ function openWorksheet(): void {
                         · 用料：{{ repair.materials.map((m) => `${m.fabricSource.name} ${m.amount}${m.unit}`).join('、') }}
                       </span>
                     </div>
-                    <div v-if="repair.change" class="muted">
-                      修补后变化：痕迹 {{ repair.change.visibility }} / 颜色 {{ repair.change.colorMatch }} / 手感 {{ repair.change.stiffness }}
-                      <span v-if="repair.change.comfortNote"> · {{ repair.change.comfortNote }}</span>
+                    <div v-if="repair.change" style="margin-top: 4px">
+                      <RepairScoreBadge :change="repair.change" mode="badge" />
+                      <span v-if="repair.change.comfortNote" class="muted" style="margin-left: 6px">
+                        · {{ repair.change.comfortNote }}
+                      </span>
                     </div>
                     <div v-else class="muted" style="color: #e6a23c">修补后变化未填写</div>
                     <div v-if="repair.reviews.length" class="muted">
@@ -191,6 +217,15 @@ function openWorksheet(): void {
                 </div>
               </el-timeline-item>
             </el-timeline>
+            <template v-if="damage.repairs.length >= 2">
+              <el-divider />
+              <div style="font-weight: 600; margin-bottom: 8px">多轮修补量化对比</div>
+              <RepairRoundCompare
+                :repairs="rounds"
+                variant="table"
+                @open="(id) => router.push({ name: 'repair-detail', params: { id } })"
+              />
+            </template>
           </el-card>
         </el-col>
 

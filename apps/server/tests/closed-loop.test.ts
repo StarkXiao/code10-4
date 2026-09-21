@@ -307,6 +307,48 @@ describe('衣物修补日志 · 闭环', () => {
     expect(garment.body.data.garment.status).toBe('active');
   });
 
+  it('多轮修补的变化被折算成效果分，且档案导出包含多轮对比', async () => {
+    const { compareRepairRounds, scoreRepairChange } = await import('@gml/shared');
+    const detail = await auth(request(app).get(`/api/garments/${garmentId}`)).expect(200);
+    const targetDamage = detail.body.data.damages.find((d: { id: string }) => d.id === damageId);
+    expect(targetDamage.repairs).toHaveLength(2);
+
+    const comparison = compareRepairRounds(
+      targetDamage.repairs.map(
+        (r: {
+          round: number;
+          stitch: { name: string };
+          finishedAt: string;
+          status: string;
+          change: Parameters<typeof scoreRepairChange>[0] | null;
+        }) => ({
+          round: r.round,
+          stitch: r.stitch.name,
+          finishedAt: r.finishedAt,
+          status: r.status,
+          change: r.change,
+        }),
+      ),
+    );
+    expect(comparison.scoredCount).toBe(2);
+    // 两轮变化都能算出 0–100 的分值
+    for (const round of comparison.rounds) {
+      expect(round.score).not.toBeNull();
+      expect(round.score).toBeGreaterThanOrEqual(0);
+      expect(round.score).toBeLessThanOrEqual(100);
+      // 这两轮都没填尺寸 → 尺寸维度为 null，且总分不白送 30 分
+      expect(round.fitScore).toBeNull();
+    }
+    // 第二轮：痕迹更明显 + 外穿可见 + 手感更硬 → 总分应低于第一轮
+    expect(comparison.rounds[1].score!).toBeLessThan(comparison.rounds[0].score!);
+    expect(comparison.deltas[1]!.score!).toBeLessThan(0);
+
+    // 导出的 Markdown 档案包含分值与对比表头
+    const markdown = await auth(request(app).get(`/api/export/garments/${garmentId}.md`)).expect(200);
+    expect(markdown.text).toContain('修补效果分');
+    expect(markdown.text).toContain('多轮修补效果对比');
+  });
+
   it('同一位置再次破损可确认为复发，并触发预警提醒', async () => {
     const recurrence = await auth(request(app).post('/api/damage-events'))
       .send({

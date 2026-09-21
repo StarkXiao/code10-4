@@ -19,17 +19,21 @@ import {
   type Verdict,
   type Visibility,
   type ColorMatch,
+  type RepairRoundScoreInput,
 } from '@gml/shared';
-import { repairApi } from '../api';
+import { damageApi, repairApi } from '../api';
 import { getToken, messageOf } from '../api/client';
 import BeforeAfterSlider from '../components/BeforeAfterSlider.vue';
 import EmptyState from '../components/EmptyState.vue';
-import type { RepairDetail } from '../types';
+import RepairScoreBadge from '../components/RepairScoreBadge.vue';
+import RepairRoundCompare from '../components/RepairRoundCompare.vue';
+import type { DamageDetail, RepairDetail } from '../types';
 
 const route = useRoute();
 const router = useRouter();
 const repairId = String(route.params.id);
 const data = ref<RepairDetail | null>(null);
+const damageDetail = ref<DamageDetail | null>(null);
 const comparison = ref<Record<string, unknown> | null>(null);
 const busy = ref(false);
 const extraDays = ref<number | undefined>();
@@ -41,10 +45,37 @@ const afterPhoto = computed(() => (comparison.value?.after as { id: string } | n
 const aspectMismatch = computed(() => Boolean(comparison.value?.aspectMismatch));
 const comparisonHint = computed(() => (comparison.value?.hint as string | null) ?? null);
 
+/** 同一破损事件下的全部修补轮次，用于多轮量化对比 */
+const rounds = computed<RepairRoundScoreInput[]>(() =>
+  (damageDetail.value?.damage.repairs ?? []).map((r) => ({
+    repairId: r.id,
+    round: r.round,
+    stitch: r.stitch.name,
+    finishedAt: r.finishedAt,
+    status: r.status,
+    change: r.change
+      ? {
+          visibility: r.change.visibility,
+          colorMatch: r.change.colorMatch,
+          dimensionChange: r.change.dimensionChange,
+          stiffness: r.change.stiffness,
+          drapeChange: r.change.drapeChange,
+          mobilityLimited: r.change.mobilityLimited,
+          visibleFromOutside: r.change.visibleFromOutside,
+        }
+      : null,
+  })),
+);
+
 async function load(): Promise<void> {
   try {
     data.value = await repairApi.detail(repairId);
-    comparison.value = await repairApi.comparison(repairId);
+    const [comparisonData, damageData] = await Promise.all([
+      repairApi.comparison(repairId),
+      damageApi.detail(data.value.repair.damageEventId),
+    ]);
+    comparison.value = comparisonData;
+    damageDetail.value = damageData;
   } catch (error) {
     ElMessage.error(messageOf(error));
   }
@@ -158,22 +189,38 @@ function openWorksheet(): void {
           <el-card shadow="never">
             <template #header>修补后变化</template>
             <EmptyState v-if="!change" title="还没有记录变化" description="这是档案最有价值的部分，别跳过。" />
-            <el-descriptions v-else :column="2" size="small" border>
-              <el-descriptions-item label="外观痕迹">{{ VISIBILITY_LABEL[change.visibility as Visibility] }}</el-descriptions-item>
-              <el-descriptions-item label="颜色匹配">{{ COLOR_MATCH_LABEL[change.colorMatch as ColorMatch] }}</el-descriptions-item>
-              <el-descriptions-item label="手感">{{ STIFFNESS_LABEL[change.stiffness as Stiffness] }}</el-descriptions-item>
-              <el-descriptions-item label="垂坠感">{{ DRAPE_CHANGE_LABEL[change.drapeChange as DrapeChange] }}</el-descriptions-item>
-              <el-descriptions-item label="尺寸变化">
-                {{ change.dimensionChange ? `${change.dimensionChange.lengthMm} × ${change.dimensionChange.widthMm} mm` : '—' }}
-              </el-descriptions-item>
-              <el-descriptions-item label="影响">
-                <span v-if="change.mobilityLimited">影响活动 </span>
-                <span v-if="change.visibleFromOutside">外人看得出 </span>
-                <span v-if="!change.mobilityLimited && !change.visibleFromOutside">无</span>
-              </el-descriptions-item>
-              <el-descriptions-item label="穿着体感" :span="2">{{ change.comfortNote ?? '—' }}</el-descriptions-item>
-              <el-descriptions-item label="试穿记录" :span="2">{{ change.wearTestNote ?? '—' }}</el-descriptions-item>
-            </el-descriptions>
+            <template v-else>
+              <RepairScoreBadge :change="change" mode="card" />
+              <el-divider />
+              <el-descriptions :column="2" size="small" border>
+                <el-descriptions-item label="外观痕迹">{{ VISIBILITY_LABEL[change.visibility as Visibility] }}</el-descriptions-item>
+                <el-descriptions-item label="颜色匹配">{{ COLOR_MATCH_LABEL[change.colorMatch as ColorMatch] }}</el-descriptions-item>
+                <el-descriptions-item label="手感">{{ STIFFNESS_LABEL[change.stiffness as Stiffness] }}</el-descriptions-item>
+                <el-descriptions-item label="垂坠感">{{ DRAPE_CHANGE_LABEL[change.drapeChange as DrapeChange] }}</el-descriptions-item>
+                <el-descriptions-item label="尺寸变化">
+                  {{ change.dimensionChange ? `${change.dimensionChange.lengthMm} × ${change.dimensionChange.widthMm} mm` : '—' }}
+                </el-descriptions-item>
+                <el-descriptions-item label="影响">
+                  <span v-if="change.mobilityLimited">影响活动 </span>
+                  <span v-if="change.visibleFromOutside">外人看得出 </span>
+                  <span v-if="!change.mobilityLimited && !change.visibleFromOutside">无</span>
+                </el-descriptions-item>
+                <el-descriptions-item label="穿着体感" :span="2">{{ change.comfortNote ?? '—' }}</el-descriptions-item>
+                <el-descriptions-item label="试穿记录" :span="2">{{ change.wearTestNote ?? '—' }}</el-descriptions-item>
+              </el-descriptions>
+            </template>
+          </el-card>
+
+          <el-card v-if="rounds.length >= 2" shadow="never">
+            <template #header>多轮修补量化对比</template>
+            <RepairRoundCompare
+              :repairs="rounds"
+              variant="table"
+              @open="(id) => router.push({ name: 'repair-detail', params: { id } })"
+            />
+            <div class="muted" style="margin-top: 8px; font-size: 12px">
+              分值差为正（绿）表示该轮比上一轮更好；「最大偏移」是物理量，负值（绿）表示尺寸偏移减小。
+            </div>
           </el-card>
         </el-col>
 
